@@ -94,21 +94,194 @@ class Cardset:
                 yaku.append("カス")
         return yaku
 
+    def calculate_score(self):
+        """
+        各役に対して以下の点数を加算する:
+          三光：5点
+          四光：8点
+          雨四光：7点
+          五光：10点
+          花見で一杯：5点
+          月見で一杯：5点
+          青短：5点
+          赤短：5点
+          たん：1点
+          猪鹿蝶：5点
+          タネ：1点
+          カス：1点
+        """
+        yaku_list = self.check_yaku()
+        score_mapping = {
+            "三光": 5,
+            "四光": 8,
+            "雨四光": 7,
+            "五光": 10,
+            "花見で一杯": 5,
+            "月見で一杯": 5,
+            "青短": 5,
+            "赤短": 5,
+            "たん": 1,
+            "猪鹿蝶": 5,
+            "タネ": 1,
+            "カス": 1
+        }
+        score = sum(score_mapping.get(y, 0) for y in yaku_list)
+        return score
+
 class Player:
     def __init__(self, name, is_cpu=False):
         self.name = name
         self.is_cpu = is_cpu
         self.hand = []      # 各ラウンド開始時に配られる手札
         self.captured = []  # ゲーム全体で獲得したカード（出来札）
+        # ラウンド毎の役宣言状態（こいこいかあがりかの選択済みか）
+        self.decision_made = False
+        self.decision = None
 
     def __str__(self):
         return self.name
 
 # =====================
+# Board
+# =====================
+class Board:
+    HAND_SIZE = 8
+    TABLE_SIZE = 8
+
+    def __init__(self, players, view):
+        self.players = players
+        self.view = view  # ユーザー選択用にViewを保持
+        self.deck = None
+        self.table = []
+
+    def setup_round(self, round_num):
+        """ラウンドの初期化"""
+        for p in self.players:
+            p.decision_made = False
+            p.decision = None
+            p.hand = []
+            p.captured = []
+
+        self.deck = Cardset()
+        self.deck.generate_cards()
+        self.deck.shuffle()
+
+        for _ in range(self.HAND_SIZE):
+            for p in self.players:
+                if self.deck.cards:
+                    p.hand.append(self.deck.cards.pop())
+
+        self.table = [self.deck.cards.pop() for _ in range(self.TABLE_SIZE)]
+
+        return round_num, self.table
+
+    def play_turn(self, player):
+        """プレイヤーのターン処理
+           1. 手札からカードを選んで出す（source="hand"）
+           2. マッチング処理を行う
+           3. 山札からカードを引き、同様にマッチング処理を行う
+        """
+        # 手札からカードを出す
+        played_card = self.choose_card(player)
+        result1 = self.match_card(player, played_card, source="hand")
+        if not player.decision_made and self.check_yaku_and_decide(player):
+            return True, result1
+
+        # 山札が空でなければ、カードを引いて処理
+        if not self.deck.cards:
+            return False, result1
+
+        drawn_card = self.deck.cards.pop()
+        result2 = self.match_card(player, drawn_card, source="deck")
+        if not player.decision_made and self.check_yaku_and_decide(player):
+            return True, result1 + result2
+
+        return False, result1 + result2
+
+    def choose_card(self, player):
+        """手札からカードを選択（出力せずにデータを返す）"""
+        if player.is_cpu:
+            played_card = random.choice(player.hand)
+            player.hand.remove(played_card)
+            return played_card
+        else:
+            # 人間の場合、選択前に場札と自分の出来札を表示する
+            self.view.display_cards("【場札】", self.table)
+            self.view.display_cards(f"【{player.name}の出来札】", player.captured)
+            index = self.view.choose_from_list(f"{player.name}の手札を選んでください:", player.hand)
+            played_card = player.hand.pop(index)
+            return played_card
+
+    def match_card(self, player, card, source="hand"):
+        """カードのマッチング処理
+           source は "hand"（手札から出した場合）または "deck"（山札から引いた場合）を示す
+        """
+        matching_cards = [c for c in self.table if c.month == card.month]
+        if matching_cards:
+            chosen_match = random.choice(matching_cards)
+            self.table.remove(chosen_match)
+            player.captured.extend([card, chosen_match])
+            # タプル: ("match", player, 出したカード, マッチした場札, source)
+            return [("match", player, card, chosen_match, source)]
+        else:
+            self.table.append(card)
+            # タプル: ("no_match", 出したカード, source)
+            return [("no_match", card, source)]
+
+    def check_yaku_and_decide(self, player):
+        """役の判定。役があれば CPU はランダム、または人間は（ここでは仮に）あがりとする"""
+        captured_set = Cardset(player.captured)
+        yaku = captured_set.check_yaku()
+        if yaku:
+            if player.is_cpu:
+                decision = random.choice(['agari', 'koi'])
+            else:
+                # 人間の場合、実際には役を表示して選択させることも可能
+                decision = 'agari'
+            player.decision_made = True
+            player.decision = decision
+            return decision == "agari"
+        return False
+
+# =====================
 # View
 # =====================
-
 class View:
+    def display_game_start(self):
+        self.display_message("=== ゲーム開始 ===\n")
+
+    def display_game_end(self):
+        self.display_message("\n=== ゲーム終了 ===")
+
+    def display_round_start(self, round_num, table):
+        self.display_message(f"\n===== ラウンド {round_num} 開始 =====")
+        self.display_cards("【初期場札】", table)
+
+    def display_turn_result(self, player, match_result):
+        """ターン結果を表示（source に応じたメッセージを出力）"""
+        for result in match_result:
+            if result[0] == "match":
+                # result: ("match", player, card, matched_card, source)
+                card = result[2]
+                matched_card = result[3]
+                source = result[4] if len(result) > 4 else "hand"
+                if source == "hand":
+                    self.display_message(f"{player.name} は手札から {card} を出し、場の {matched_card} とマッチし、獲得しました！")
+                elif source == "deck":
+                    self.display_message(f"{player.name} は山札から引いた {card} が、場の {matched_card} とマッチし、獲得しました！")
+            elif result[0] == "no_match":
+                # result: ("no_match", card, source)
+                card = result[1]
+                source = result[2] if len(result) > 2 else "hand"
+                if source == "hand":
+                    self.display_message(f"手札から出した {card} は、マッチするカードがなかったので場に置きました。")
+                elif source == "deck":
+                    self.display_message(f"山札から引いた {card} は、マッチするカードがなかったので場に置きました。")
+
+    def display_final_score(self, player, score, yaku):
+        yaku_text = ", ".join(yaku) if yaku else "役なし"
+        self.display_message(f"{player.name} の得点: {score}点 ({yaku_text})")
+
     def display_message(self, message):
         print(message)
 
@@ -123,7 +296,6 @@ class View:
     def get_input(self, prompt):
         return input(prompt)
 
-    # ユーザーにリストからの選択を促し、選ばれたインデックスを返す
     def choose_from_list(self, prompt, items):
         self.display_cards(prompt, items)
         while True:
@@ -139,144 +311,42 @@ class View:
 # =====================
 # Controller
 # =====================
-
 class Controller:
     TOTAL_ROUNDS = 12
-    HAND_SIZE = 8
-    TABLE_SIZE = 8
 
     def __init__(self, players, view):
-        self.players = players  # Model の Player オブジェクトのリスト
-        self.view = view        # View オブジェクト
+        self.view = view
+        self.board = Board(players, view)
 
     def run_game(self):
-        self.view.display_message("=== ゲーム開始 ===\n")
+        self.view.display_game_start()
         for round_num in range(1, self.TOTAL_ROUNDS + 1):
-            self.setup_round(round_num)
-            self.play_round(round_num)
-            self.finish_round(round_num)
+            round_num, table = self.board.setup_round(round_num)
+            self.view.display_round_start(round_num, table)
+
+            round_over = False
+            while not round_over:
+                for player in self.board.players:
+                    if not player.hand:
+                        round_over = True
+                        break
+
+                    round_over, match_result = self.board.play_turn(player)
+                    self.view.display_turn_result(player, match_result)
+
         self.show_game_result()
 
-    # ラウンドのセットアップ：デッキ生成・シャッフル、手札・初期場札の配布
-    def setup_round(self, round_num):
-        self.view.display_message(f"\n===== ラウンド {round_num} 開始 =====")
-        self.deck = Cardset()
-        self.deck.generate_cards()
-        self.deck.shuffle()
-        for p in self.players:
-            p.hand = []
-        for _ in range(self.HAND_SIZE):
-            for p in self.players:
-                if self.deck.cards:
-                    p.hand.append(self.deck.cards.pop())
-        self.table = []
-        for _ in range(self.TABLE_SIZE):
-            if self.deck.cards:
-                self.table.append(self.deck.cards.pop())
-        self.view.display_message("初期場札:")
-        self.view.display_cards("", self.table)
-
-    # ラウンド内のターンを進める
-    def play_round(self, round_num):
-        round_over = False
-        while not round_over:
-            for p in self.players:
-                if not p.hand:
-                    self.view.display_message(f"\n【{p.name} の手札がなくなりました】 ラウンド終了！")
-                    round_over = True
-                    break
-                if self.process_turn(p):
-                    round_over = True
-                    break
-
-    # 1プレイヤーのターンの処理（手札出し＋山札引き）
-    def process_turn(self, player):
-        self.view.display_message(f"\n【{player.name} のターン】")
-        if not player.is_cpu:
-            self.view.display_cards("あなたの出来札:", player.captured)
-        self.view.display_cards("現在の場札:", self.table)
-        if not self.play_card_phase(player):
-            return True
-        if not player.hand:
-            self.view.display_message(f"\n【{player.name} の手札がなくなりました】 ラウンド終了！")
-            return True
-        if not self.draw_card_phase(player):
-            return True
-        if not player.hand:
-            self.view.display_message(f"\n【{player.name} の手札がなくなりました】 ラウンド終了！")
-            return True
-        return False
-
-    # 手札からカードを出すフェーズ（View の選択機能を利用）
-    def play_card_phase(self, player):
-        if player.hand:
-            if not player.is_cpu:
-                choice = self.view.choose_from_list("あなたの手札:", player.hand)
-                played_card = player.hand.pop(choice)
-            else:
-                played_card = random.choice(player.hand)
-                player.hand.remove(played_card)
-            self.view.display_message(f"{player.name} は手札から {played_card} を出しました。")
-            self.match_phase(player, played_card)
-            return True
-        return False
-
-    # 山札からカードを引くフェーズ
-    def draw_card_phase(self, player):
-        if self.deck.cards:
-            drawn_card = self.deck.cards.pop()
-            self.view.display_message(f"\n{player.name} は山札から {drawn_card} を引きました。")
-            self.match_phase(player, drawn_card)
-            return True
-        else:
-            self.view.display_message("山札はもうありません。")
-            return False
-
-    # カードのマッチング処理：View の選択機能を利用してマッチ対象を決定
-    def match_phase(self, player, card):
-        matching_cards = [c for c in self.table if c.month == card.month]
-        if matching_cards:
-            if not player.is_cpu:
-                choice = self.view.choose_from_list("該当するカード:", matching_cards)
-                chosen_match = matching_cards[choice]
-            else:
-                chosen_match = random.choice(matching_cards)
-            self.table.remove(chosen_match)
-            player.captured.extend([card, chosen_match])
-            self.view.display_message(f"{player.name} は {chosen_match} とマッチ！ 両カードを獲得。")
-        else:
-            self.table.append(card)
-            self.view.display_message("マッチするカードがなかったので、場札に置きました。")
-
-    # ラウンド終了時の表示処理
-    def finish_round(self, round_num):
-        self.view.display_message("\n===== ラウンド終了 =====")
-        self.view.display_cards("残った場札:", self.table)
-        for p in self.players:
-            self.view.display_message(f"\n{p.name} のラウンド獲得カード枚数: {len(p.captured)}")
-            captured_set = Cardset(p.captured)
-            yaku = captured_set.check_yaku()
-            if yaku:
-                self.view.display_message("　→ 役: " + ", ".join(yaku))
-            else:
-                self.view.display_message("　→ 役: なし")
-
-    # ゲーム終了時の結果表示
     def show_game_result(self):
-        self.view.display_message("\n=== ゲーム終了 ===")
-        for p in self.players:
-            self.view.display_message(f"\n{p.name} の総獲得カード枚数: {len(p.captured)}")
+        self.view.display_game_end()
+        for p in self.board.players:
             captured_set = Cardset(p.captured)
             yaku = captured_set.check_yaku()
-            if yaku:
-                self.view.display_message("　→ 役: " + ", ".join(yaku))
-            else:
-                self.view.display_message("　→ 役: なし")
+            score = captured_set.calculate_score()
+            self.view.display_final_score(p, score, yaku)
 
 # =====================
 # メイン処理
 # =====================
-
 def main():
     human = Player("あなた")
     cpu = Player("CPU", is_cpu=True)
