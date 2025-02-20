@@ -1,13 +1,18 @@
-# tests/test_view.py
+import pytest
+from unittest.mock import patch
+from src.view import View
 
-from src.view import DummyView
+@pytest.fixture
+def sample_view():
+    return View()
 
-def test_dummy_view_choose_from_list():
-    dummy = DummyView()
-    # ダミービューは常に選択肢 0 を返す
-    items = ['a', 'b', 'c']
-    choice = dummy.choose_from_list("選択してください:", items)
-    assert choice == 0
-    # 表示されたメッセージが記録されていることを確認（任意）
-    assert "選択してください:" in dummy.messages[0]
+def test_display_message(sample_view, capsys):
+    sample_view.display_message("テストメッセージ")
+    captured = capsys.readouterr()
+    assert "テストメッセージ" in captured.out
 
+def test_choose_from_list(sample_view):
+    items = ["選択肢1", "選択肢2"]
+    with patch("builtins.input", return_value="0"):
+        choice = sample_view.choose_from_list("選んでください:", items)
+        assert choice == 0
